@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate the factory board visual-check fixtures (site/factory/visual-check/).
+# Regenerate the factory board visual-check fixtures (visual-check/).
 #
 # The board is zero-build and reads live `factory-data` snapshots; these
 # fixtures are captured against the BUNDLED fixture snapshot instead
@@ -10,9 +10,9 @@
 # Requires a headless-capable chromium on PATH. The board pins "now" to the
 # fixture's tick time in fixture mode, so re-runs produce identical frames.
 #
-# Usage: bash site/factory/visual-check/capture.sh
+# Usage: bash visual-check/capture.sh
 set -eu
-cd "$(dirname "$0")/.."   # site/factory — the board root (fixture URLs are relative to it)
+cd "$(dirname "$0")/.."   # repo root — the board root (fixture URLs are relative to it)
 
 CHROME="${CHROME:-$(command -v chromium || command -v chromium-browser || command -v google-chrome)}"
 BASE="file://$PWD/index.html"
