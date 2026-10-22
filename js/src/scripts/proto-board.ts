@@ -177,7 +177,7 @@ function renderLedger(id: string): void {
     parts.push(l.tokens.legs + ' legs');
   }
   ledgerEl.textContent =
-    'LEDGER ▸ ' + (parts.length ? parts.join(' · ') + ' · ALL TIME' : 'no all-time sources yet');
+    'LEDGER · ' + (parts.length ? parts.join(' · ') + ' · ALL TIME' : 'no all-time sources yet');
   ledgerEl.title =
     'All-time factory ledger (the snapshot above is a live window: open work + 24h merges)' +
     ' · merged = PRs authored by ' + f.machineAuthors.join(' / ') + ' · issues done = closed issues assigned to them' +
@@ -210,6 +210,25 @@ function since(iso: string): number { return Date.now() - new Date(iso).getTime(
 /* ---------------- wires ---------------- */
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/* Inline SVG icon set — no emoji/text glyphs anywhere in the UI. */
+const ICON_PATHS: Record<string, string> = {
+  close: '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>',
+  caret: '<path d="M4.5 6.5l3.5 3.5 3.5-3.5"/>',
+  back: '<path d="M8 3.5L3.5 8 8 12.5M3.5 8H13"/>',
+  external: '<path d="M7 3.5H3.5v9h9V9M9.5 3h3.5v3.5M12.5 3.5L7.5 8.5"/>',
+  play: '<path d="M5.5 4.5l6 3.5-6 3.5z" fill="currentColor" stroke="none"/>',
+  dot: '<circle cx="8" cy="8" r="3.2" fill="currentColor" stroke="none"/>',
+  hourglass: '<path d="M4.5 2.5h7M4.5 13.5h7M5.8 2.5v1.2c0 1.7 4.4 2.2 4.4 4.3s-4.4 2.6-4.4 4.3v1.2M10.2 2.5v1.2c0 1.7-4.4 2.2-4.4 4.3s4.4 2.6 4.4 4.3v1.2"/>',
+};
+function icon(name: string, cls?: string): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('class', 'iconIco' + (cls ? ' ' + cls : ''));
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = '<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + (ICON_PATHS[name] ?? '') + '</g>';
+  return svg;
+}
 function el(name: string, attrs: Record<string, string | number>, parent?: Element): SVGElement {
   const node = document.createElementNS(SVG_NS, name);
   for (const k in attrs) node.setAttribute(k, String(attrs[k]));
@@ -315,9 +334,22 @@ function draw() {
       main.textContent = baseText;
       const clock = document.createElementNS(SVG_NS, 'tspan');
       clock.setAttribute('class', 'board__wait');
-      clock.textContent = ' · ⌛' + humanize(wait.headAgeMs);
+      clock.textContent = ' · ' + humanize(wait.headAgeMs);
       label.appendChild(main);
       label.appendChild(clock);
+      // drawn hourglass svg just outside the text run (no emoji in svg text)
+      try {
+        const lx = parseFloat(label.getAttribute('x') ?? '0');
+        const wMain = (main as SVGTSpanElement).getComputedTextLength();
+        const wClock = (clock as SVGTSpanElement).getComputedTextLength();
+        const gx = t.labelSide === 'left' ? lx - wMain - wClock - 18 : lx + wMain + wClock + 4;
+        const ico = icon('hourglass', 'board__waitIco');
+        ico.setAttribute('x', String(gx));
+        ico.setAttribute('y', String(ty - 8));
+        ico.setAttribute('width', '13');
+        ico.setAttribute('height', '13');
+        g.appendChild(ico);
+      } catch { /* not rendered yet — text-only fallback */ }
     } else {
       label.textContent = baseText;
     }
@@ -646,7 +678,11 @@ function ticketCard(c: Card, laneId: string): HTMLElement {
   const status = document.createElement('span');
   status.className = 'tkCard__status';
   const tok = cardTokens(c);
-  status.textContent = '▸ ' + (c.assignee ?? c.author ?? '—') + (tok ? ' · ' + fmtTokens(tok) + ' tok' : '');
+  status.appendChild(icon('play'));
+  const statusTxt = document.createElement('span');
+  statusTxt.className = 'tkCard__statusTxt';
+  statusTxt.textContent = (c.assignee ?? c.author ?? '—') + (tok ? ' · ' + fmtTokens(tok) + ' tok' : '');
+  status.appendChild(statusTxt);
   foot.appendChild(status);
   foot.appendChild(historyRail(c));
 
@@ -803,8 +839,12 @@ function openTicket(c: Card, laneId: string) {
   });
   const raw = document.getElementById('ticket-raw') as HTMLDetailsElement;
   raw.open = false;
-  (raw.querySelector('summary') as HTMLElement).textContent =
-    'Raw history · ' + h.length + ' transition' + (h.length === 1 ? '' : 's');
+  const summary = raw.querySelector('summary') as HTMLElement;
+  summary.innerHTML = '';
+  summary.appendChild(icon('play', 'tkRawChev'));
+  const summaryTxt = document.createElement('span');
+  summaryTxt.textContent = 'Raw history · ' + h.length + ' transition' + (h.length === 1 ? '' : 's');
+  summary.appendChild(summaryTxt);
 
   const tokensBox = document.getElementById('ticket-tokens') as HTMLElement;
   tokensBox.innerHTML = '';
@@ -923,7 +963,10 @@ function renderFactoryList() {
     if (realIdx === activeIdx) {
       const mark = document.createElement('span');
       mark.className = 'board__selectMark';
-      mark.textContent = '● live';
+      mark.appendChild(icon('dot'));
+      const markTxt = document.createElement('span');
+      markTxt.textContent = 'live';
+      mark.appendChild(markTxt);
       btn.appendChild(mark);
     }
     btn.addEventListener('click', () => setActive(realIdx));

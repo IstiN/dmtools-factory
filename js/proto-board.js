@@ -395,7 +395,7 @@ function renderLedger(id) {
     parts.push("R " + fmtTokens(l.tokens.read) + " \xB7 W " + fmtTokens(l.tokens.write));
     parts.push(l.tokens.legs + " legs");
   }
-  ledgerEl.textContent = "LEDGER \u25B8 " + (parts.length ? parts.join(" \xB7 ") + " \xB7 ALL TIME" : "no all-time sources yet");
+  ledgerEl.textContent = "LEDGER \xB7 " + (parts.length ? parts.join(" \xB7 ") + " \xB7 ALL TIME" : "no all-time sources yet");
   ledgerEl.title = "All-time factory ledger (the snapshot above is a live window: open work + 24h merges) \xB7 merged = PRs authored by " + f.machineAuthors.join(" / ") + " \xB7 issues done = closed issues assigned to them \xB7 tokens = every leg in data/" + f.tokensAsset + " on the factory-data branch" + (l.tokens ? "" : " \xB7 this factory does not publish a tokens stream yet (dmtools-agents#1108)");
   updateMergedLabel(l.merged);
   renderTokenTotals();
@@ -421,6 +421,23 @@ function since(iso) {
   return Date.now() - new Date(iso).getTime();
 }
 var SVG_NS = "http://www.w3.org/2000/svg";
+var ICON_PATHS = {
+  close: '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>',
+  caret: '<path d="M4.5 6.5l3.5 3.5 3.5-3.5"/>',
+  back: '<path d="M8 3.5L3.5 8 8 12.5M3.5 8H13"/>',
+  external: '<path d="M7 3.5H3.5v9h9V9M9.5 3h3.5v3.5M12.5 3.5L7.5 8.5"/>',
+  play: '<path d="M5.5 4.5l6 3.5-6 3.5z" fill="currentColor" stroke="none"/>',
+  dot: '<circle cx="8" cy="8" r="3.2" fill="currentColor" stroke="none"/>',
+  hourglass: '<path d="M4.5 2.5h7M4.5 13.5h7M5.8 2.5v1.2c0 1.7 4.4 2.2 4.4 4.3s-4.4 2.6-4.4 4.3v1.2M10.2 2.5v1.2c0 1.7-4.4 2.2-4.4 4.3s4.4 2.6 4.4 4.3v1.2"/>'
+};
+function icon(name, cls) {
+  const svg2 = document.createElementNS(SVG_NS, "svg");
+  svg2.setAttribute("viewBox", "0 0 16 16");
+  svg2.setAttribute("class", "iconIco" + (cls ? " " + cls : ""));
+  svg2.setAttribute("aria-hidden", "true");
+  svg2.innerHTML = '<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + (ICON_PATHS[name] ?? "") + "</g>";
+  return svg2;
+}
 function el(name, attrs, parent) {
   const node = document.createElementNS(SVG_NS, name);
   for (const k in attrs) node.setAttribute(k, String(attrs[k]));
@@ -539,9 +556,22 @@ function draw() {
       main.textContent = baseText;
       const clock = document.createElementNS(SVG_NS, "tspan");
       clock.setAttribute("class", "board__wait");
-      clock.textContent = " \xB7 \u231B" + humanize(wait.headAgeMs);
+      clock.textContent = " \xB7 " + humanize(wait.headAgeMs);
       label.appendChild(main);
       label.appendChild(clock);
+      try {
+        const lx = parseFloat(label.getAttribute("x") ?? "0");
+        const wMain = main.getComputedTextLength();
+        const wClock = clock.getComputedTextLength();
+        const gx = t.labelSide === "left" ? lx - wMain - wClock - 18 : lx + wMain + wClock + 4;
+        const ico = icon("hourglass", "board__waitIco");
+        ico.setAttribute("x", String(gx));
+        ico.setAttribute("y", String(ty - 8));
+        ico.setAttribute("width", "13");
+        ico.setAttribute("height", "13");
+        g.appendChild(ico);
+      } catch {
+      }
     } else {
       label.textContent = baseText;
     }
@@ -843,7 +873,11 @@ function ticketCard(c, laneId) {
   const status = document.createElement("span");
   status.className = "tkCard__status";
   const tok = cardTokens(c);
-  status.textContent = "\u25B8 " + (c.assignee ?? c.author ?? "\u2014") + (tok ? " \xB7 " + fmtTokens(tok) + " tok" : "");
+  status.appendChild(icon("play"));
+  const statusTxt = document.createElement("span");
+  statusTxt.className = "tkCard__statusTxt";
+  statusTxt.textContent = (c.assignee ?? c.author ?? "\u2014") + (tok ? " \xB7 " + fmtTokens(tok) + " tok" : "");
+  status.appendChild(statusTxt);
   foot.appendChild(status);
   foot.appendChild(historyRail(c));
   card.appendChild(head);
@@ -990,7 +1024,12 @@ function openTicket(c, laneId) {
   });
   const raw = document.getElementById("ticket-raw");
   raw.open = false;
-  raw.querySelector("summary").textContent = "Raw history \xB7 " + h.length + " transition" + (h.length === 1 ? "" : "s");
+  const summary = raw.querySelector("summary");
+  summary.innerHTML = "";
+  summary.appendChild(icon("play", "tkRawChev"));
+  const summaryTxt = document.createElement("span");
+  summaryTxt.textContent = "Raw history \xB7 " + h.length + " transition" + (h.length === 1 ? "" : "s");
+  summary.appendChild(summaryTxt);
   const tokensBox = document.getElementById("ticket-tokens");
   tokensBox.innerHTML = "";
   const tokens = tokensFor(c, tokensStream());
@@ -1100,7 +1139,10 @@ function renderFactoryList() {
     if (realIdx === activeIdx) {
       const mark = document.createElement("span");
       mark.className = "board__selectMark";
-      mark.textContent = "\u25CF live";
+      mark.appendChild(icon("dot"));
+      const markTxt = document.createElement("span");
+      markTxt.textContent = "live";
+      mark.appendChild(markTxt);
       btn.appendChild(mark);
     }
     btn.addEventListener("click", () => setActive(realIdx));
