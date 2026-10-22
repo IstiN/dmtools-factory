@@ -28,7 +28,7 @@
           <button class="board__selectBtn" id="factory-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
             <span class="board__selectDot" id="factory-btn-dot"></span>
             <span id="factory-btn-name">…</span>
-            <span class="board__selectCaret">▾</span>
+            <svg class="iconIco board__selectCaret" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5l3.5 3.5 3.5-3.5"/></g></svg>
           </button>
           <div class="board__selectMenu" id="factory-menu" hidden>
             <input class="board__selectSearch" id="factory-search" type="text" placeholder="Search repositories…" autocomplete="off" spellcheck="false" />
@@ -80,7 +80,7 @@
     <div class="phaseModal" id="phase-modal" role="dialog" aria-modal="true" aria-labelledby="lane-title" hidden>
       <div class="phaseModal__backdrop" data-close></div>
       <div class="phaseModal__panel">
-        <button class="phaseModal__close" type="button" data-close aria-label="Close">✕</button>
+        <button class="phaseModal__close" type="button" data-close aria-label="Close"><svg class="iconIco" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></g></svg></button>
 
         <div id="lane-view">
           <p class="phaseModal__eyebrow" id="lane-eyebrow"></p>
@@ -92,7 +92,7 @@
         </div>
 
         <div id="ticket-view" hidden>
-          <button class="phaseModal__back" type="button" id="ticket-back">← Back to lane</button>
+          <button class="phaseModal__back" type="button" id="ticket-back"><svg class="iconIco" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3.5L3.5 8 8 12.5M3.5 8H13"/></g></svg><span>Back to lane</span></button>
           <p class="phaseModal__eyebrow" id="ticket-eyebrow"></p>
           <h2 class="phaseModal__title" id="ticket-title"></h2>
           <div class="phaseModal__chips" id="ticket-chips"></div>
@@ -112,7 +112,7 @@
               <dl class="phaseModal__stats" id="ticket-stats"></dl>
               <p class="phaseModal__sectionLabel">Token spend</p>
               <div id="ticket-tokens"></div>
-              <a class="phaseModal__gh" id="ticket-gh" target="_blank" rel="noopener">Open on GitHub ↗</a>
+              <a class="phaseModal__gh" id="ticket-gh" target="_blank" rel="noopener"><span>Open on GitHub</span><svg class="iconIco" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H3.5v9h9V9M9.5 3h3.5v3.5M12.5 3.5L7.5 8.5"/></g></svg></a>
             </aside>
           </div>
         </div>
