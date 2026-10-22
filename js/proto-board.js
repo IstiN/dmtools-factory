@@ -260,6 +260,78 @@ function mergeDayStats(items, days, nowMs) {
   const best = per.reduce((b, d) => !b || d.n > b.n ? { date: d.date, n: d.n } : b, null);
   return { total, perDay: total / days, best: best && best.n > 0 ? best : null };
 }
+function stuckCards(items, nowMs, thresholdMs) {
+  const out = [];
+  for (const { lane, card } of items) {
+    const last = cardLastStamp(card);
+    if (!last) continue;
+    const t = Date.parse(last);
+    if (!Number.isFinite(t)) continue;
+    const ageMs = nowMs - t;
+    if (ageMs >= thresholdMs) {
+      out.push({ lane, pr: card.pr, issue: card.issue, title: card.title ?? "(untitled)", lastAt: last, ageMs });
+    }
+  }
+  return out.sort((a, b) => b.ageMs - a.ageMs);
+}
+var BAD_VERDICTS = /* @__PURE__ */ new Set(["failure", "timed_out"]);
+function errorCards(items) {
+  const out = [];
+  for (const { lane, card } of items) {
+    const verdict = card.checks?.conclusion ?? card.checks?.verdict;
+    if (verdict && BAD_VERDICTS.has(verdict)) {
+      out.push({ lane, pr: card.pr, issue: card.issue, title: card.title ?? "(untitled)", verdict });
+    }
+  }
+  return out;
+}
+function deliveredToday(cards, nowMs) {
+  const today = new Date(nowMs).toISOString().slice(0, 10);
+  const out = [];
+  for (const card of cards) {
+    const mergedAt = card.mergedAt;
+    if (!mergedAt || !mergedAt.startsWith(today)) continue;
+    const spans = histSpans(card.history ?? [], nowMs, mergedAt);
+    const leadMs = spans.length ? Math.max(0, Date.parse(mergedAt) - spans[0].startMs) : null;
+    out.push({ pr: card.pr, issue: card.issue, title: card.title ?? "(untitled)", mergedAt, leadMs });
+  }
+  return out.sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt));
+}
+function flowAverages(cards, nowMs) {
+  const all = [];
+  for (const card of cards) {
+    all.push(...histSpans(card.history ?? [], nowMs, card.mergedAt));
+  }
+  return phaseAggregate(all);
+}
+function workflowRuns(json) {
+  const runs = json?.workflow_runs;
+  if (!Array.isArray(runs)) return [];
+  const out = [];
+  for (const raw of runs) {
+    const r = raw;
+    if (typeof r.id !== "number" || typeof r.run_started_at !== "string") continue;
+    const startedMs = Date.parse(r.run_started_at);
+    if (!Number.isFinite(startedMs)) continue;
+    const endMs = r.conclusion != null && typeof r.updated_at === "string" ? Date.parse(r.updated_at) : NaN;
+    out.push({
+      id: r.id,
+      // run names come from upstream workflows — strip emoji per the no-glyph rule
+      name: typeof r.name === "string" ? r.name.replace(/[^\x20-\x7E]/g, "").trim() : "run",
+      startedMs,
+      endMs: Number.isFinite(endMs) ? endMs : null,
+      url: typeof r.html_url === "string" ? r.html_url : "https://github.com/"
+    });
+  }
+  return out;
+}
+function runsInWindow(runs, startMs, endMs) {
+  return runs.filter((r) => {
+    if (r.startedMs >= endMs) return false;
+    const runEnd = r.endMs ?? Number.MAX_SAFE_INTEGER;
+    return runEnd >= startMs;
+  });
+}
 
 // js/src/scripts/proto-board.ts
 var ALL_LANES = [...laneOrder, ...backlogColumns];
@@ -399,6 +471,7 @@ function renderLedger(id) {
   ledgerEl.title = "All-time factory ledger (the snapshot above is a live window: open work + 24h merges) \xB7 merged = PRs authored by " + f.machineAuthors.join(" / ") + " \xB7 issues done = closed issues assigned to them \xB7 tokens = every leg in data/" + f.tokensAsset + " on the factory-data branch" + (l.tokens ? "" : " \xB7 this factory does not publish a tokens stream yet (dmtools-agents#1108)");
   updateMergedLabel(l.merged);
   renderTokenTotals();
+  updateBottleneckChip();
 }
 function updateMergedLabel(allTime) {
   if (allTime == null) return;
@@ -428,7 +501,11 @@ var ICON_PATHS = {
   external: '<path d="M7 3.5H3.5v9h9V9M9.5 3h3.5v3.5M12.5 3.5L7.5 8.5"/>',
   play: '<path d="M5.5 4.5l6 3.5-6 3.5z" fill="currentColor" stroke="none"/>',
   dot: '<circle cx="8" cy="8" r="3.2" fill="currentColor" stroke="none"/>',
-  hourglass: '<path d="M4.5 2.5h7M4.5 13.5h7M5.8 2.5v1.2c0 1.7 4.4 2.2 4.4 4.3s-4.4 2.6-4.4 4.3v1.2M10.2 2.5v1.2c0 1.7-4.4 2.2-4.4 4.3s4.4 2.6 4.4 4.3v1.2"/>'
+  hourglass: '<path d="M4.5 2.5h7M4.5 13.5h7M5.8 2.5v1.2c0 1.7 4.4 2.2 4.4 4.3s-4.4 2.6-4.4 4.3v1.2M10.2 2.5v1.2c0 1.7-4.4 2.2-4.4 4.3s4.4 2.6 4.4 4.3v1.2"/>',
+  alert: '<path d="M8 2.8L14.2 13H1.8z"/><path d="M8 6.8v2.7M8 11.4v.1"/>',
+  errx: '<circle cx="8" cy="8" r="5.5"/><path d="M6.2 6.2l3.6 3.6M9.8 6.2l-3.6 3.6"/>',
+  check: '<circle cx="8" cy="8" r="5.5"/><path d="M5.4 8.2l1.8 1.8 3.4-3.7"/>',
+  clock: '<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/>'
 };
 function icon(name, cls) {
   const svg2 = document.createElementNS(SVG_NS, "svg");
@@ -588,6 +665,7 @@ function draw() {
   });
   animateIn();
   renderTokenTotals();
+  updateBottleneckChip();
   startPulses();
 }
 function hot(laneId, on) {
@@ -842,6 +920,7 @@ async function appendMergedArchive(box) {
 function showLaneView() {
   document.getElementById("lane-view").hidden = false;
   document.getElementById("ticket-view").hidden = true;
+  document.getElementById("bottleneck-view").hidden = true;
 }
 function badgeChip(label) {
   const chip = document.createElement("span");
@@ -883,7 +962,10 @@ function ticketCard(c, laneId) {
   card.appendChild(head);
   card.appendChild(title);
   card.appendChild(foot);
-  card.addEventListener("click", () => openTicket(c, laneId));
+  card.addEventListener("click", () => {
+    ticketFrom = "lane";
+    openTicket(c, laneId);
+  });
   return card;
 }
 function historyRail(c) {
@@ -903,6 +985,68 @@ function historyRail(c) {
     wrap.appendChild(dot);
   });
   return wrap;
+}
+var runsCache = /* @__PURE__ */ new Map();
+var RUNS_TTL_MS = 5 * 60 * 1e3;
+async function fetchRuns(sha) {
+  const hit = runsCache.get(sha);
+  if (hit && Date.now() - hit.at < RUNS_TTL_MS) return hit.failed ? null : hit.runs;
+  try {
+    const res = await fetch("https://api.github.com/repos/" + st?.repo + "/actions/runs?head_sha=" + sha + "&per_page=100", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const runs = workflowRuns(await res.json());
+    runsCache.set(sha, { runs, at: Date.now(), failed: false });
+    return runs;
+  } catch {
+    runsCache.set(sha, { runs: [], at: Date.now(), failed: true });
+    return null;
+  }
+}
+function runLink(r) {
+  const a = document.createElement("a");
+  a.className = "tkRuns__link";
+  a.href = r.url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.title = r.name + (r.endMs ? " \xB7 " + humanize(r.endMs - r.startedMs) : " \xB7 running") + " \xB7 started " + new Date(r.startedMs).toISOString().slice(11, 19) + " UTC \u2014 opens the run on GitHub";
+  a.appendChild(icon("external"));
+  const txt = document.createElement("span");
+  txt.textContent = r.name || "run";
+  a.appendChild(txt);
+  return a;
+}
+function decorateRunWithLinks(row, runs, startMs, endMs, branchFallback) {
+  const slot = document.createElement("span");
+  slot.className = "tkRuns";
+  const inWindow = runs ? runsInWindow(runs, startMs, endMs) : [];
+  if (inWindow.length) {
+    const shown = inWindow.slice(0, 3);
+    shown.forEach((r) => slot.appendChild(runLink(r)));
+    if (inWindow.length > shown.length) {
+      const more = document.createElement("span");
+      more.className = "tkRuns__more";
+      more.textContent = "+" + (inWindow.length - shown.length);
+      more.title = inWindow.slice(3).map((r) => r.name).join(", ");
+      slot.appendChild(more);
+    }
+  } else if (runs) {
+    return;
+  } else if (branchFallback) {
+    const a = document.createElement("a");
+    a.className = "tkRuns__link";
+    a.href = branchFallback;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.title = "Workflow runs for this branch on GitHub";
+    a.appendChild(icon("external"));
+    const txt = document.createElement("span");
+    txt.textContent = "runs";
+    a.appendChild(txt);
+    slot.appendChild(a);
+  } else {
+    return;
+  }
+  row.appendChild(slot);
 }
 function timelineHue(state) {
   if (["development", "pr_created", "assigned", "agent:dev queued"].includes(state)) return "hue--dev";
@@ -995,9 +1139,12 @@ function openTicket(c, laneId) {
     tl.appendChild(p);
   }
   const maxDur = Math.max(1, ...spans.map((s) => s.durMs));
+  const histRows = [];
   h.forEach((entry, i) => {
     const next = h[i + 1]?.at;
     const dur = entry.at ? next ? new Date(next).getTime() - new Date(entry.at).getTime() : since(entry.at) : null;
+    const startMs = entry.at ? Date.parse(entry.at) : NaN;
+    const endMs = next ? Date.parse(next) : c.mergedAt ? Date.parse(c.mergedAt) : Date.now();
     const li = document.createElement("li");
     li.className = "tkHist" + (i === h.length - 1 ? " is-here" : "");
     const row = document.createElement("div");
@@ -1021,6 +1168,7 @@ function openTicket(c, laneId) {
     li.appendChild(row);
     li.appendChild(bar);
     history.appendChild(li);
+    if (Number.isFinite(startMs) && Number.isFinite(endMs)) histRows.push({ li, startMs, endMs });
   });
   const raw = document.getElementById("ticket-raw");
   raw.open = false;
@@ -1030,6 +1178,14 @@ function openTicket(c, laneId) {
   const summaryTxt = document.createElement("span");
   summaryTxt.textContent = "Raw history \xB7 " + h.length + " transition" + (h.length === 1 ? "" : "s");
   summary.appendChild(summaryTxt);
+  if (c.head && st) {
+    const fb = c.branch ? "https://github.com/" + st.repo + "/actions?query=branch%3A" + encodeURIComponent('"' + c.branch + '"') : null;
+    fetchRuns(c.head).then((runs) => {
+      if (modal.hidden) return;
+      histRows.forEach((r) => decorateRunWithLinks(r.li, runs, r.startMs, r.endMs, fb));
+      raw.title = runs && runs.length ? runs.length + " workflow runs on this head \u2014 per-phase links open the matching run" : runs ? "No runs for this head sha \u2014 links fall back to the branch run list" : "GitHub API rate-limited \u2014 links fall back to the branch run list";
+    });
+  }
   const tokensBox = document.getElementById("ticket-tokens");
   tokensBox.innerHTML = "";
   const tokens = tokensFor(c, tokensStream());
@@ -1095,7 +1251,153 @@ function openTicket(c, laneId) {
     stats.appendChild(dd);
   });
   document.getElementById("ticket-gh").setAttribute("href", cardUrl(c));
-  document.getElementById("ticket-back").onclick = () => openLane(laneId);
+  document.getElementById("ticket-back").onclick = () => {
+    if (ticketFrom === "bn") openBottlenecks();
+    else openLane(laneId);
+  };
+}
+var BN_STUCK_MS = 45 * 60 * 1e3;
+var BN_STUCK_STORAGE_MS = 6 * 36e5;
+var BN_PIPELINE = /* @__PURE__ */ new Set(["development", "pr_created", "pr_validation", "review", "validating"]);
+var bnBtn = document.getElementById("bottleneck-btn");
+var ticketFrom = "lane";
+function laneCardPairs() {
+  if (!st) return [];
+  const out = [];
+  for (const lane of ALL_LANES) for (const card of st.lanes[lane.id] ?? []) out.push({ lane: lane.id, card });
+  return out;
+}
+function stuckNow(pairs, now) {
+  const live = pairs.filter((p) => p.lane !== "merged_recent");
+  return [
+    ...stuckCards(live.filter((p) => BN_PIPELINE.has(p.lane)), now, BN_STUCK_MS),
+    ...stuckCards(live.filter((p) => !BN_PIPELINE.has(p.lane)), now, BN_STUCK_STORAGE_MS)
+  ].sort((a, b) => b.ageMs - a.ageMs);
+}
+function updateBottleneckChip() {
+  if (!st) return;
+  const now = Date.now();
+  const pairs = laneCardPairs();
+  const stuck = stuckNow(pairs, now);
+  const errs = errorCards(pairs.filter((p) => p.lane !== "merged_recent"));
+  const done = deliveredToday(pairs.map((p) => p.card), now);
+  const set = (id, n) => {
+    const el2 = document.getElementById(id);
+    if (el2) {
+      el2.textContent = n > 99 ? "99+" : String(n);
+      el2.classList.toggle("is-hot", n > 0);
+    }
+  };
+  set("bn-stuck", stuck.length);
+  set("bn-err", errs.length);
+  set("bn-done", done.length);
+}
+function bnRow(num, issue, title, meta, metaCls, lane, card) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "bnRow";
+  const id = document.createElement("span");
+  id.className = "bnRow__id";
+  id.textContent = "#" + (num ?? issue ?? "\u2014");
+  const ttl = document.createElement("span");
+  ttl.className = "bnRow__title";
+  ttl.textContent = title;
+  ttl.title = title;
+  const laneEl = document.createElement("span");
+  laneEl.className = "bnRow__lane";
+  laneEl.textContent = TITLES[lane] ?? lane;
+  const metaEl = document.createElement("span");
+  metaEl.className = "bnRow__meta " + metaCls;
+  metaEl.textContent = meta;
+  row.appendChild(id);
+  row.appendChild(ttl);
+  row.appendChild(laneEl);
+  row.appendChild(metaEl);
+  row.addEventListener("click", () => {
+    ticketFrom = "bn";
+    openTicket(card, lane);
+  });
+  return row;
+}
+function bnEmpty(box, text) {
+  const p = document.createElement("p");
+  p.className = "phaseModal__empty";
+  p.textContent = text;
+  box.appendChild(p);
+}
+function openBottlenecks() {
+  if (!st) return;
+  document.getElementById("lane-view").hidden = true;
+  document.getElementById("ticket-view").hidden = true;
+  document.getElementById("bottleneck-view").hidden = false;
+  modal.hidden = false;
+  document.body.style.overflow = "hidden";
+  modal.querySelector(".phaseModal__close")?.focus();
+  document.getElementById("bn-eyebrow").textContent = "BOTTLENECKS \xB7 " + st.factory.toUpperCase() + " \xB7 snapshot " + humanize(since(st.tick.at)) + " ago";
+  const now = Date.now();
+  const pairs = laneCardPairs();
+  const stuck = stuckNow(pairs, now);
+  const stuckBox = document.getElementById("bn-stuck-list");
+  stuckBox.innerHTML = "";
+  if (!stuck.length) bnEmpty(stuckBox, "Nothing stuck \u2014 every open card moved in the last 45m.");
+  stuck.slice(0, 8).forEach((sItem) => {
+    const card = pairs.find((p) => (p.card.pr ?? p.card.issue) === (sItem.pr ?? sItem.issue) && p.lane === sItem.lane)?.card;
+    stuckBox.appendChild(bnRow(sItem.pr, sItem.issue, sItem.title, humanize(sItem.ageMs) + " idle", "is-warn", sItem.lane, card));
+  });
+  if (stuck.length > 8) {
+    const more = document.createElement("p");
+    more.className = "bnMore";
+    more.textContent = "+" + (stuck.length - 8) + " more stuck";
+    stuckBox.appendChild(more);
+  }
+  const errs = errorCards(pairs.filter((p) => p.lane !== "merged_recent"));
+  const errBox = document.getElementById("bn-err-list");
+  errBox.innerHTML = "";
+  if (!errs.length) bnEmpty(errBox, "No failing checks right now.");
+  errs.slice(0, 8).forEach((e) => {
+    const card = pairs.find((p) => (p.card.pr ?? p.card.issue) === (e.pr ?? e.issue) && p.lane === e.lane)?.card;
+    errBox.appendChild(bnRow(e.pr, e.issue, e.title, e.verdict, "is-bad", e.lane, card));
+  });
+  const done = deliveredToday(pairs.map((p) => p.card), now);
+  const doneBox = document.getElementById("bn-done-list");
+  doneBox.innerHTML = "";
+  if (!done.length) bnEmpty(doneBox, "Nothing merged today (UTC) yet.");
+  const head = document.createElement("p");
+  head.className = "bnBig";
+  head.textContent = String(done.length) + " delivered";
+  doneBox.appendChild(head);
+  done.slice(0, 8).forEach((d) => {
+    const card = pairs.map((p) => p.card).find((c) => (c.pr ?? c.issue) === (d.pr ?? d.issue));
+    doneBox.appendChild(bnRow(d.pr, d.issue, d.title, d.leadMs != null ? "lead " + humanize(d.leadMs) : "\u2014", "is-good", "merged_recent", card));
+  });
+  const flow = document.getElementById("bn-flow");
+  flow.innerHTML = "";
+  const ag = flowAverages(pairs.map((p) => p.card), now);
+  if (!ag.length) bnEmpty(flow, "No phase history in this snapshot yet.");
+  const maxAvg = Math.max(1, ...ag.map((a) => a.avgMs));
+  ag.forEach((a) => {
+    const row = document.createElement("div");
+    row.className = "bnFlow";
+    const top = document.createElement("div");
+    top.className = "bnFlow__row";
+    const label = document.createElement("span");
+    label.className = "bnFlow__label";
+    label.textContent = a.state + (a.visits > 1 ? " \xD7" + a.visits : "");
+    const avg = document.createElement("span");
+    avg.className = "bnFlow__avg";
+    avg.textContent = "avg " + humanize(a.avgMs);
+    top.appendChild(label);
+    top.appendChild(avg);
+    const bar = document.createElement("div");
+    bar.className = "tkFlow__bar";
+    const fill = document.createElement("span");
+    fill.className = "hue--" + timelineHue(a.state).replace("hue--", "");
+    fill.style.width = Math.max(4, Math.round(a.avgMs / maxAvg * 100)) + "%";
+    bar.appendChild(fill);
+    row.appendChild(top);
+    row.appendChild(bar);
+    flow.appendChild(row);
+  });
 }
 function setActive(i) {
   activeIdx = i;
@@ -1227,6 +1529,11 @@ function closeModal() {
 modal.addEventListener("click", (e) => {
   if (e.target.closest("[data-close]")) closeModal();
 });
+bnBtn.addEventListener("click", () => {
+  if (modal.hidden || document.getElementById("bottleneck-view")?.hidden) openBottlenecks();
+  else closeModal();
+});
+document.getElementById("bn-back").onclick = () => closeModal();
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !modal.hidden) closeModal();
 });

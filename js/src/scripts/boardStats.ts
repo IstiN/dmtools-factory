@@ -16,6 +16,7 @@ export type HistoryEntry = { state: string; at?: string };
 export type StatCard = {
   pr?: number;
   issue?: number;
+  checks?: { verdict?: string; conclusion?: string } | null;
   title?: string;
   devStartedAt?: string;
   approvedAt?: string;
@@ -324,4 +325,103 @@ export function mergeDayStats(items: { at: string | null }[], days: number, nowM
   const total = per.reduce((a, d) => a + d.n, 0);
   const best = per.reduce<{ date: string; n: number } | null>((b, d) => (!b || d.n > b.n ? { date: d.date, n: d.n } : b), null);
   return { total, perDay: total / days, best: best && best.n > 0 ? best : null };
+}
+
+/* ---------------- bottleneck analytics (board HUD panel) ---------------- */
+
+export type StuckItem = {
+  lane: string; pr?: number; issue?: number; title: string;
+  lastAt: string | null; ageMs: number;
+};
+
+/** Cards with no state movement for >= thresholdMs, oldest first to sort desc. */
+export function stuckCards(items: { lane: string; card: StatCard }[], nowMs: number, thresholdMs: number): StuckItem[] {
+  const out: StuckItem[] = [];
+  for (const { lane, card } of items) {
+    const last = cardLastStamp(card);
+    if (!last) continue;
+    const t = Date.parse(last);
+    if (!Number.isFinite(t)) continue;
+    const ageMs = nowMs - t;
+    if (ageMs >= thresholdMs) {
+      out.push({ lane, pr: card.pr, issue: card.issue, title: card.title ?? '(untitled)', lastAt: last, ageMs });
+    }
+  }
+  return out.sort((a, b) => b.ageMs - a.ageMs);
+}
+
+const BAD_VERDICTS = new Set(['failure', 'timed_out']);
+
+export type ErrorItem = { lane: string; pr?: number; issue?: number; title: string; verdict: string };
+
+/** Cards whose CI check failed or timed out. */
+export function errorCards(items: { lane: string; card: StatCard }[]): ErrorItem[] {
+  const out: ErrorItem[] = [];
+  for (const { lane, card } of items) {
+    const verdict = card.checks?.conclusion ?? card.checks?.verdict;
+    if (verdict && BAD_VERDICTS.has(verdict)) {
+      out.push({ lane, pr: card.pr, issue: card.issue, title: card.title ?? '(untitled)', verdict });
+    }
+  }
+  return out;
+}
+
+export type DeliveredItem = { pr?: number; issue?: number; title: string; mergedAt: string; leadMs: number | null };
+
+/** Cards merged today (UTC), latest first, with lead = first seen → mergedAt. */
+export function deliveredToday(cards: StatCard[], nowMs: number): DeliveredItem[] {
+  const today = new Date(nowMs).toISOString().slice(0, 10);
+  const out: DeliveredItem[] = [];
+  for (const card of cards) {
+    const mergedAt = (card as { mergedAt?: string }).mergedAt;
+    if (!mergedAt || !mergedAt.startsWith(today)) continue;
+    const spans = histSpans(card.history ?? [], nowMs, mergedAt);
+    const leadMs = spans.length ? Math.max(0, Date.parse(mergedAt) - spans[0].startMs) : null;
+    out.push({ pr: card.pr, issue: card.issue, title: card.title ?? '(untitled)', mergedAt, leadMs });
+  }
+  return out.sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt));
+}
+
+/** Avg dwell per phase across every snapshot card — the per-item time chart. */
+export function flowAverages(cards: StatCard[], nowMs: number): PhaseAg[] {
+  const all: HistSpan[] = [];
+  for (const card of cards) {
+    all.push(...histSpans(card.history ?? [], nowMs, (card as { mergedAt?: string }).mergedAt));
+  }
+  return phaseAggregate(all);
+}
+
+/** GitHub Actions runs for one head sha — trimmed to what the runs links need. */
+export type WorkflowRun = { id: number; name: string; startedMs: number; endMs: number | null; url: string };
+
+export function workflowRuns(json: unknown): WorkflowRun[] {
+  const runs = (json as { workflow_runs?: unknown[] } | null)?.workflow_runs;
+  if (!Array.isArray(runs)) return [];
+  const out: WorkflowRun[] = [];
+  for (const raw of runs) {
+    const r = raw as { id?: unknown; name?: unknown; run_started_at?: unknown; updated_at?: unknown; conclusion?: unknown; html_url?: unknown };
+    if (typeof r.id !== 'number' || typeof r.run_started_at !== 'string') continue;
+    const startedMs = Date.parse(r.run_started_at);
+    if (!Number.isFinite(startedMs)) continue;
+    // a run with no conclusion is still going — it has no end
+    const endMs = r.conclusion != null && typeof r.updated_at === 'string' ? Date.parse(r.updated_at) : NaN;
+    out.push({
+      id: r.id,
+      // run names come from upstream workflows — strip emoji per the no-glyph rule
+      name: typeof r.name === 'string' ? r.name.replace(/[^\x20-\x7E]/g, '').trim() : 'run',
+      startedMs,
+      endMs: Number.isFinite(endMs) ? endMs : null,
+      url: typeof r.html_url === 'string' ? r.html_url : 'https://github.com/',
+    });
+  }
+  return out;
+}
+
+/** Runs overlapping the [startMs, endMs) window — a running run counts while it covers the span. */
+export function runsInWindow(runs: WorkflowRun[], startMs: number, endMs: number): WorkflowRun[] {
+  return runs.filter((r) => {
+    if (r.startedMs >= endMs) return false;
+    const runEnd = r.endMs ?? Number.MAX_SAFE_INTEGER;
+    return runEnd >= startMs;
+  });
 }

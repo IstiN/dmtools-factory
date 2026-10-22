@@ -6,6 +6,7 @@ import {
   tokenTotals, laneActive, queueWait, sumTokensMap, searchCount,
   filterFactories, mergedArchiveFromSearch, qualifyAll,
   histSpans, phaseAggregate, laneDwell, tokensFor, mergesPerDay, mergeDayStats, medianMs,
+  stuckCards, errorCards, deliveredToday, flowAverages, workflowRuns, runsInWindow, type WorkflowRun,
   type StatCard, type TokenRow, type TokenTotals, type ArchiveRow, type MergedArchive,
 } from './boardStats';
 
@@ -14,6 +15,7 @@ type Card = StatCard & {
   url?: string; branch?: string;
   bucket?: string;
   mergedAt?: string;
+  head?: string;
 };
 type Snapshot = {
   factory: string; repo: string; tick: { at: string };
@@ -185,6 +187,7 @@ function renderLedger(id: string): void {
     (l.tokens ? '' : ' · this factory does not publish a tokens stream yet (dmtools-agents#1108)');
   updateMergedLabel(l.merged);
   renderTokenTotals();
+  updateBottleneckChip();
 }
 
 /** Patch the merged_recent terminal label with the Σ all-time count in place. */
@@ -220,6 +223,10 @@ const ICON_PATHS: Record<string, string> = {
   play: '<path d="M5.5 4.5l6 3.5-6 3.5z" fill="currentColor" stroke="none"/>',
   dot: '<circle cx="8" cy="8" r="3.2" fill="currentColor" stroke="none"/>',
   hourglass: '<path d="M4.5 2.5h7M4.5 13.5h7M5.8 2.5v1.2c0 1.7 4.4 2.2 4.4 4.3s-4.4 2.6-4.4 4.3v1.2M10.2 2.5v1.2c0 1.7-4.4 2.2-4.4 4.3s4.4 2.6 4.4 4.3v1.2"/>',
+  alert: '<path d="M8 2.8L14.2 13H1.8z"/><path d="M8 6.8v2.7M8 11.4v.1"/>',
+  errx: '<circle cx="8" cy="8" r="5.5"/><path d="M6.2 6.2l3.6 3.6M9.8 6.2l-3.6 3.6"/>',
+  check: '<circle cx="8" cy="8" r="5.5"/><path d="M5.4 8.2l1.8 1.8 3.4-3.7"/>',
+  clock: '<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/>',
 };
 function icon(name: string, cls?: string): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -366,6 +373,7 @@ function draw() {
 
   animateIn();
   renderTokenTotals();
+  updateBottleneckChip();
   startPulses();
 }
 
@@ -642,6 +650,7 @@ async function appendMergedArchive(box: HTMLElement) {
 function showLaneView() {
   (document.getElementById('lane-view') as HTMLElement).hidden = false;
   (document.getElementById('ticket-view') as HTMLElement).hidden = true;
+  (document.getElementById('bottleneck-view') as HTMLElement).hidden = true;
 }
 
 function badgeChip(label: string): HTMLElement {
@@ -689,7 +698,7 @@ function ticketCard(c: Card, laneId: string): HTMLElement {
   card.appendChild(head);
   card.appendChild(title);
   card.appendChild(foot);
-  card.addEventListener('click', () => openTicket(c, laneId));
+  card.addEventListener('click', () => { ticketFrom = 'lane'; openTicket(c, laneId); });
   return card;
 }
 
@@ -710,6 +719,76 @@ function historyRail(c: Card): HTMLElement {
     wrap.appendChild(dot);
   });
   return wrap;
+}
+
+
+/* ---------------- per-phase links to GitHub Actions runs ---------------- */
+
+const runsCache = new Map<string, { runs: WorkflowRun[]; at: number; failed: boolean }>();
+const RUNS_TTL_MS = 5 * 60 * 1000;
+
+async function fetchRuns(sha: string): Promise<WorkflowRun[] | null> {
+  const hit = runsCache.get(sha);
+  if (hit && Date.now() - hit.at < RUNS_TTL_MS) return hit.failed ? null : hit.runs;
+  try {
+    const res = await fetch('https://api.github.com/repos/' + st?.repo + '/actions/runs?head_sha=' + sha + '&per_page=100', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const runs = workflowRuns(await res.json());
+    runsCache.set(sha, { runs, at: Date.now(), failed: false });
+    return runs;
+  } catch {
+    runsCache.set(sha, { runs: [], at: Date.now(), failed: true });
+    return null;
+  }
+}
+
+function runLink(r: WorkflowRun): HTMLElement {
+  const a = document.createElement('a');
+  a.className = 'tkRuns__link';
+  a.href = r.url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.title = r.name + (r.endMs ? ' · ' + humanize(r.endMs - r.startedMs) : ' · running') + ' · started ' + new Date(r.startedMs).toISOString().slice(11, 19) + ' UTC — opens the run on GitHub';
+  a.appendChild(icon('external'));
+  const txt = document.createElement('span');
+  txt.textContent = r.name || 'run';
+  a.appendChild(txt);
+  return a;
+}
+
+function decorateRunWithLinks(row: HTMLElement, runs: WorkflowRun[] | null, startMs: number, endMs: number, branchFallback: string | null) {
+  const slot = document.createElement('span');
+  slot.className = 'tkRuns';
+  const inWindow = runs ? runsInWindow(runs, startMs, endMs) : [];
+  if (inWindow.length) {
+    const shown = inWindow.slice(0, 3);
+    shown.forEach((r) => slot.appendChild(runLink(r)));
+    if (inWindow.length > shown.length) {
+      const more = document.createElement('span');
+      more.className = 'tkRuns__more';
+      more.textContent = '+' + (inWindow.length - shown.length);
+      more.title = inWindow.slice(3).map((r) => r.name).join(', ');
+      slot.appendChild(more);
+    }
+  } else if (runs) {
+    // no runs in this window — nothing to link
+    return;
+  } else if (branchFallback) {
+    const a = document.createElement('a');
+    a.className = 'tkRuns__link';
+    a.href = branchFallback;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.title = 'Workflow runs for this branch on GitHub';
+    a.appendChild(icon('external'));
+    const txt = document.createElement('span');
+    txt.textContent = 'runs';
+    a.appendChild(txt);
+    slot.appendChild(a);
+  } else {
+    return;
+  }
+  row.appendChild(slot);
 }
 
 /* ---------------- modal: ticket drawer view ---------------- */
@@ -813,9 +892,12 @@ function openTicket(c: Card, laneId: string) {
   }
 
   const maxDur = Math.max(1, ...spans.map((s) => s.durMs));
+  const histRows: { li: HTMLElement; startMs: number; endMs: number }[] = [];
   h.forEach((entry, i) => {
     const next = h[i + 1]?.at;
     const dur = entry.at ? (next ? new Date(next).getTime() - new Date(entry.at).getTime() : since(entry.at)) : null;
+    const startMs = entry.at ? Date.parse(entry.at) : NaN;
+    const endMs = next ? Date.parse(next) : (c.mergedAt ? Date.parse(c.mergedAt) : Date.now());
     const li = document.createElement('li');
     li.className = 'tkHist' + (i === h.length - 1 ? ' is-here' : '');
     const row = document.createElement('div');
@@ -836,6 +918,7 @@ function openTicket(c: Card, laneId: string) {
     bar.appendChild(fill);
     li.appendChild(row); li.appendChild(bar);
     history.appendChild(li);
+    if (Number.isFinite(startMs) && Number.isFinite(endMs)) histRows.push({ li, startMs, endMs });
   });
   const raw = document.getElementById('ticket-raw') as HTMLDetailsElement;
   raw.open = false;
@@ -845,6 +928,19 @@ function openTicket(c: Card, laneId: string) {
   const summaryTxt = document.createElement('span');
   summaryTxt.textContent = 'Raw history · ' + h.length + ' transition' + (h.length === 1 ? '' : 's');
   summary.appendChild(summaryTxt);
+  if (c.head && st) {
+    const fb = c.branch
+      ? 'https://github.com/' + st.repo + '/actions?query=branch%3A' + encodeURIComponent('"' + c.branch + '"')
+      : null;
+    fetchRuns(c.head).then((runs) => {
+      if (modal.hidden) return;
+      histRows.forEach((r) => decorateRunWithLinks(r.li, runs, r.startMs, r.endMs, fb));
+      raw.title = runs && runs.length
+        ? runs.length + ' workflow runs on this head — per-phase links open the matching run'
+        : runs ? 'No runs for this head sha — links fall back to the branch run list'
+               : 'GitHub API rate-limited — links fall back to the branch run list';
+    });
+  }
 
   const tokensBox = document.getElementById('ticket-tokens') as HTMLElement;
   tokensBox.innerHTML = '';
@@ -911,7 +1007,155 @@ function openTicket(c: Card, laneId: string) {
   });
 
   (document.getElementById('ticket-gh') as HTMLElement).setAttribute('href', cardUrl(c));
-  (document.getElementById('ticket-back') as HTMLElement).onclick = () => openLane(laneId);
+  (document.getElementById('ticket-back') as HTMLElement).onclick = () => { if (ticketFrom === 'bn') openBottlenecks(); else openLane(laneId); };
+}
+
+
+/* ---------------- bottlenecks: stuck / failing / delivered today ---------------- */
+
+const BN_STUCK_MS = 45 * 60 * 1000;      // pipeline lanes: a stall is 45m without movement
+const BN_STUCK_STORAGE_MS = 6 * 3600000;  // storage/backlog: neglect is 6h without movement
+const BN_PIPELINE = new Set(['development', 'pr_created', 'pr_validation', 'review', 'validating']);
+const bnBtn = document.getElementById('bottleneck-btn') as HTMLButtonElement;
+let ticketFrom: 'lane' | 'bn' = 'lane';
+
+/** Every card paired with the lane it sits in right now. */
+function laneCardPairs(): { lane: string; card: Card }[] {
+  if (!st) return [];
+  const out: { lane: string; card: Card }[] = [];
+  for (const lane of ALL_LANES) for (const card of st.lanes[lane.id] ?? []) out.push({ lane: lane.id, card });
+  return out;
+}
+
+function stuckNow(pairs: { lane: string; card: Card }[], now: number) {
+  const live = pairs.filter((p) => p.lane !== 'merged_recent');
+  return [
+    ...stuckCards(live.filter((p) => BN_PIPELINE.has(p.lane)), now, BN_STUCK_MS),
+    ...stuckCards(live.filter((p) => !BN_PIPELINE.has(p.lane)), now, BN_STUCK_STORAGE_MS),
+  ].sort((a, b) => b.ageMs - a.ageMs);
+}
+
+function updateBottleneckChip() {
+  if (!st) return;
+  const now = Date.now();
+  const pairs = laneCardPairs();
+  const stuck = stuckNow(pairs, now);
+  const errs = errorCards(pairs.filter((p) => p.lane !== 'merged_recent'));
+  const done = deliveredToday(pairs.map((p) => p.card), now);
+  const set = (id: string, n: number) => {
+    const el = document.getElementById(id) as HTMLElement | null;
+    if (el) { el.textContent = n > 99 ? '99+' : String(n); el.classList.toggle('is-hot', n > 0); }
+  };
+  set('bn-stuck', stuck.length);
+  set('bn-err', errs.length);
+  set('bn-done', done.length);
+}
+
+function bnRow(num: number | undefined, issue: number | undefined, title: string, meta: string, metaCls: string, lane: string, card: Card): HTMLElement {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'bnRow';
+  const id = document.createElement('span');
+  id.className = 'bnRow__id';
+  id.textContent = '#' + (num ?? issue ?? '—');
+  const ttl = document.createElement('span');
+  ttl.className = 'bnRow__title';
+  ttl.textContent = title;
+  ttl.title = title;
+  const laneEl = document.createElement('span');
+  laneEl.className = 'bnRow__lane';
+  laneEl.textContent = TITLES[lane] ?? lane;
+  const metaEl = document.createElement('span');
+  metaEl.className = 'bnRow__meta ' + metaCls;
+  metaEl.textContent = meta;
+  row.appendChild(id); row.appendChild(ttl); row.appendChild(laneEl); row.appendChild(metaEl);
+  row.addEventListener('click', () => { ticketFrom = 'bn'; openTicket(card, lane); });
+  return row;
+}
+
+function bnEmpty(box: HTMLElement, text: string) {
+  const p = document.createElement('p');
+  p.className = 'phaseModal__empty';
+  p.textContent = text;
+  box.appendChild(p);
+}
+
+function openBottlenecks() {
+  if (!st) return;
+  (document.getElementById('lane-view') as HTMLElement).hidden = true;
+  (document.getElementById('ticket-view') as HTMLElement).hidden = true;
+  (document.getElementById('bottleneck-view') as HTMLElement).hidden = false;
+  modal.hidden = false;
+  document.body.style.overflow = 'hidden';
+  (modal.querySelector('.phaseModal__close') as HTMLElement | null)?.focus();
+  (document.getElementById('bn-eyebrow') as HTMLElement).textContent =
+    'BOTTLENECKS · ' + st.factory.toUpperCase() + ' · snapshot ' + humanize(since(st.tick.at)) + ' ago';
+  const now = Date.now();
+  const pairs = laneCardPairs();
+
+  const stuck = stuckNow(pairs, now);
+  const stuckBox = document.getElementById('bn-stuck-list') as HTMLElement;
+  stuckBox.innerHTML = '';
+  if (!stuck.length) bnEmpty(stuckBox, 'Nothing stuck — every open card moved in the last 45m.');
+  stuck.slice(0, 8).forEach((sItem) => {
+    const card = pairs.find((p) => (p.card.pr ?? p.card.issue) === (sItem.pr ?? sItem.issue) && p.lane === sItem.lane)?.card as Card;
+    stuckBox.appendChild(bnRow(sItem.pr, sItem.issue, sItem.title, humanize(sItem.ageMs) + ' idle', 'is-warn', sItem.lane, card));
+  });
+  if (stuck.length > 8) {
+    const more = document.createElement('p');
+    more.className = 'bnMore';
+    more.textContent = '+' + (stuck.length - 8) + ' more stuck';
+    stuckBox.appendChild(more);
+  }
+
+  const errs = errorCards(pairs.filter((p) => p.lane !== 'merged_recent'));
+  const errBox = document.getElementById('bn-err-list') as HTMLElement;
+  errBox.innerHTML = '';
+  if (!errs.length) bnEmpty(errBox, 'No failing checks right now.');
+  errs.slice(0, 8).forEach((e) => {
+    const card = pairs.find((p) => (p.card.pr ?? p.card.issue) === (e.pr ?? e.issue) && p.lane === e.lane)?.card as Card;
+    errBox.appendChild(bnRow(e.pr, e.issue, e.title, e.verdict, 'is-bad', e.lane, card));
+  });
+
+  const done = deliveredToday(pairs.map((p) => p.card), now);
+  const doneBox = document.getElementById('bn-done-list') as HTMLElement;
+  doneBox.innerHTML = '';
+  if (!done.length) bnEmpty(doneBox, 'Nothing merged today (UTC) yet.');
+  const head = document.createElement('p');
+  head.className = 'bnBig';
+  head.textContent = String(done.length) + ' delivered';
+  doneBox.appendChild(head);
+  done.slice(0, 8).forEach((d) => {
+    const card = pairs.map((p) => p.card).find((c) => (c.pr ?? c.issue) === (d.pr ?? d.issue)) as Card;
+    doneBox.appendChild(bnRow(d.pr, d.issue, d.title, d.leadMs != null ? 'lead ' + humanize(d.leadMs) : '—', 'is-good', 'merged_recent', card));
+  });
+
+  const flow = document.getElementById('bn-flow') as HTMLElement;
+  flow.innerHTML = '';
+  const ag = flowAverages(pairs.map((p) => p.card), now);
+  if (!ag.length) bnEmpty(flow, 'No phase history in this snapshot yet.');
+  const maxAvg = Math.max(1, ...ag.map((a) => a.avgMs));
+  ag.forEach((a) => {
+    const row = document.createElement('div');
+    row.className = 'bnFlow';
+    const top = document.createElement('div');
+    top.className = 'bnFlow__row';
+    const label = document.createElement('span');
+    label.className = 'bnFlow__label';
+    label.textContent = a.state + (a.visits > 1 ? ' ×' + a.visits : '');
+    const avg = document.createElement('span');
+    avg.className = 'bnFlow__avg';
+    avg.textContent = 'avg ' + humanize(a.avgMs);
+    top.appendChild(label); top.appendChild(avg);
+    const bar = document.createElement('div');
+    bar.className = 'tkFlow__bar';
+    const fill = document.createElement('span');
+    fill.className = 'hue--' + (timelineHue(a.state).replace('hue--', ''));
+    fill.style.width = Math.max(4, Math.round((a.avgMs / maxAvg) * 100)) + '%';
+    bar.appendChild(fill);
+    row.appendChild(top); row.appendChild(bar);
+    flow.appendChild(row);
+  });
 }
 
 /* ---------------- boot ---------------- */
@@ -1047,6 +1291,11 @@ function closeModal() {
 modal.addEventListener('click', (e) => {
   if ((e.target as HTMLElement).closest('[data-close]')) closeModal();
 });
+bnBtn.addEventListener('click', () => {
+  if (modal.hidden || document.getElementById('bottleneck-view')?.hidden) openBottlenecks();
+  else closeModal();
+});
+(document.getElementById('bn-back') as HTMLElement).onclick = () => closeModal();
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !modal.hidden) closeModal();
 });
