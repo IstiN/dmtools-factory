@@ -1,116 +1,124 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Factory Board</title>
+  <title>DMTools Factory — Proto Board</title>
   <!--
-    Factory Board v3 (owner 2026-10-03) — deploy anywhere (GitHub Pages,
-    Cloudflare Pages, fa1.dev). Zero build, zero tokens: the board reads
-    factory-state snapshots published by each factory's SM tick to its
-    repo's `factory-data` branch (raw.githubusercontent CDN links).
-    Schema 1, schema 2 and the v3 additions (card history, backlog,
-    optional tokens) all render — additive schema, old snapshots never
-    break it.
-
-    v3 surfaces: readable per-lane summaries + progress bars, a click-to-
-    open details drawer (state history, per-state timings, per-leg token
-    table), and the issue backlog lanes fed by the same snapshots.
-
-    v4 value stream (gh-769): the drawer's history renders as a phase rail
-    (rework rounds collapse: 'PR created ×3', first pass vs rework time),
-    validating splits CI wall-time from queue wait (checks.runStartedAt),
-    every card names what happens next / what's blocking, token totals
-    show on cards, and a board-level value-stream strip aggregates phases,
-    rework and token spend. Stale snapshots announce themselves.
-
-    DEPLOY:
-      1. Copy this folder.
-      2. Edit config.js — factories[] + lanes + backlogColumns (all knobs
-         live there).
-      3. Style: edit styles.css :root variables (or data-theme overrides).
-
-    DEV: append ?fixture=visual-check/fixture.json to render a bundled
-    sample snapshot (deterministic visual-check screenshots, no network);
-    ?drawer=pr-817 deep-links the details drawer.
+    Proto board (v5 of the factory board line, ported from the dm.ai landing
+    prototype). Zero build for the page itself: js/proto-board.js is an
+    esbuild bundle of js/proto-src/*.ts — rebuild with
+      npx esbuild js/proto-src/proto-board.ts --bundle --format=esm --outfile=js/proto-board.js
+    Sources kept in js/proto-src/ (boardStats has the pure helpers + vitest tests upstream).
+    Reads the same factory-data snapshots as index.html; adds ledger, dwell
+    analytics, flow/timeline modals and the 30d merged archive dashboard.
   -->
-  <script>
-    (function () {
-      try {
-        var t = new URLSearchParams(location.search).get('theme');
-        if (t !== 'light' && t !== 'dark') {
-          t = localStorage.getItem('fb-theme') ||
-              (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-        }
-        document.documentElement.setAttribute('data-theme', t);
-      } catch (e) {}
-    })();
-  </script>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="./proto.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" id="brand-logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none"
-             stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-             stroke-linejoin="round">
-          <path d="M3 21h18"></path>
-          <path d="M4 21V10l5 3V10l5 3V7l6-3v17"></path>
-          <path d="M17.5 7.5v0"></path>
-          <circle cx="8" cy="16.5" r=".75" fill="currentColor" stroke="none"></circle>
-          <circle cx="13" cy="13.5" r=".75" fill="currentColor" stroke="none"></circle>
-          <circle cx="18" cy="10.5" r=".75" fill="currentColor" stroke="none"></circle>
-        </svg>
+<section class="board" id="board">
+    <div class="board__grid" aria-hidden="true"></div>
+    <div class="board__vignette" aria-hidden="true"></div>
+
+    <header class="board__hud">
+      <span class="board__hudLabel">DMTOOLS FACTORY — LIVE STATE</span>
+      <span class="board__hudRight">
+        <span class="board__hudRepo">REPOSITORIES</span>
+        <div class="board__select" id="factory-select">
+          <button class="board__selectBtn" id="factory-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+            <span class="board__selectDot" id="factory-btn-dot"></span>
+            <span id="factory-btn-name">…</span>
+            <span class="board__selectCaret">▾</span>
+          </button>
+          <div class="board__selectMenu" id="factory-menu" hidden>
+            <input class="board__selectSearch" id="factory-search" type="text" placeholder="Search repositories…" autocomplete="off" spellcheck="false" />
+            <ul class="board__selectList" id="factory-list" role="listbox" aria-label="Repositories"></ul>
+          </div>
+        </div>
+        <span class="board__hudSeq board__hudTokens" id="token-totals" title="Token spend across all cards · read = prompt + cache, write = completion">TOKENS —</span>
+        <span class="board__hudSeq" id="tick-status">…</span>
       </span>
-      <h1 id="brand-title">Factory Board</h1>
-      <span class="live" id="live-dot" title="auto-refresh"></span>
+    </header>
+    <div class="board__ledger" id="factory-ledger" role="status">LEDGER …</div>
+
+    <div class="board__status" id="load-status" role="status">Loading factory states…</div>
+
+    <svg class="board__wires" id="wires" aria-hidden="true"></svg>
+
+    <div class="board__cube" id="cube">
+      <svg viewBox="0 0 200 200" width="210" height="210" role="img" aria-label="DMTools cube mark">
+        <defs>
+          <linearGradient id="cubeGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#00FFF0" />
+            <stop offset="0.5" stop-color="#00F6FF" />
+            <stop offset="1" stop-color="#B896FF" />
+          </linearGradient>
+          <filter id="cubeGlow" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="4.5" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        <g stroke="url(#cubeGrad)" stroke-width="2.6" fill="none" stroke-linejoin="round" filter="url(#cubeGlow)">
+          <path d="M100 18 L171 59 L171 141 L100 182 L29 141 L29 59 Z" fill="rgba(0,246,255,0.035)" />
+          <path d="M100 100 L100 18 M100 100 L171 59 M100 100 L29 59" />
+          <path d="M100 100 L100 182" opacity="0.55" />
+        </g>
+        <g stroke="url(#cubeGrad)" stroke-width="1.4" fill="none" opacity="0.38" stroke-linejoin="round">
+          <path d="M100 52 L137 73 L137 127 L100 148 L63 127 L63 73 Z" />
+          <path d="M100 100 L100 52 M100 100 L137 73 M100 100 L63 73 M100 100 L100 148" />
+        </g>
+      </svg>
     </div>
-    <div class="topbar-right">
-      <span class="clock" id="clock">—</span>
-      <button class="theme-btn" id="theme-btn" title="toggle theme" aria-label="toggle theme">
-        <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none"
-             stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <circle cx="12" cy="12" r="4"></circle>
-          <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5 5l1.4 1.4M17.6 17.6L19 19M19 5l-1.4 1.4M6.4 17.6L5 19"></path>
-        </svg>
-        <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none"
-             stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-             stroke-linejoin="round">
-          <path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11z"></path>
-        </svg>
-      </button>
+
+    <div class="board__caption">
+      <p class="board__wordmark">DM<span>Tools</span></p>
+      <p class="board__tagline">ONE CLI · EVERY INTEGRATION · NOTHING TO DEPLOY</p>
     </div>
-  </header>
 
-  <nav class="factory-tabs" id="factory-tabs" aria-label="factories"></nav>
+    <ul class="board__mobileLanes" id="mobile-lanes"></ul>
 
-  <main id="board">
-    <section class="statusline" id="statusline" hidden>
-      <span class="pill" id="tick-pill">tick: —</span>
-      <span class="pill" id="counts-pill"></span>
-      <span class="pill" id="backlog-pill"></span>
-      <span class="pill" id="cost-pill" hidden title="model spend (14d)"></span>
-      <span class="pill" id="repo-pill"></span>
-      <span class="pill" id="schema-pill">schema 2</span>
-    </section>
-    <div class="lanes" id="lanes"></div>
-    <section class="flow" id="flow" aria-label="value stream"></section>
-    <section class="backlog" id="backlog" aria-label="issue backlog"></section>
-    <p class="error" id="error" hidden></p>
-  </main>
+    <div class="phaseModal" id="phase-modal" role="dialog" aria-modal="true" aria-labelledby="lane-title" hidden>
+      <div class="phaseModal__backdrop" data-close></div>
+      <div class="phaseModal__panel">
+        <button class="phaseModal__close" type="button" data-close aria-label="Close">✕</button>
 
-  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
-  <aside class="drawer" id="drawer" hidden aria-label="details drawer"
-         role="dialog" aria-modal="false"></aside>
+        <div id="lane-view">
+          <p class="phaseModal__eyebrow" id="lane-eyebrow"></p>
+          <h2 class="phaseModal__title" id="lane-title"></h2>
+          <p class="phaseModal__summary" id="lane-summary"></p>
+          <div class="laneAvg" id="lane-avg" hidden></div>
+          <p class="phaseModal__sectionLabel">Tickets in this lane</p>
+          <div class="phaseModal__tickets" id="lane-tickets"></div>
+        </div>
 
-  <footer class="foot">
-    <span id="foot-note">states are what the machine decided — snapshot from the SM tick · timestamps accumulate tick-over-tick</span>
-  </footer>
-
-  <script src="config.js"></script>
-  <script src="steps.js"></script>
-  <script src="flow.js"></script>
-  <script src="app.js"></script>
+        <div id="ticket-view" hidden>
+          <button class="phaseModal__back" type="button" id="ticket-back">← Back to lane</button>
+          <p class="phaseModal__eyebrow" id="ticket-eyebrow"></p>
+          <h2 class="phaseModal__title" id="ticket-title"></h2>
+          <div class="phaseModal__chips" id="ticket-chips"></div>
+          <div class="tkGrid">
+            <div class="tkGrid__main">
+              <p class="phaseModal__sectionLabel">Flow · phases aggregated</p>
+              <div id="ticket-flow"></div>
+              <p class="phaseModal__sectionLabel">Timeline · to scale</p>
+              <div id="ticket-timeline"></div>
+              <details class="tkRaw" id="ticket-raw">
+                <summary>Raw history</summary>
+                <ul class="phaseModal__history" id="ticket-history"></ul>
+              </details>
+            </div>
+            <aside class="tkGrid__side">
+              <p class="phaseModal__sectionLabel">Value stream</p>
+              <dl class="phaseModal__stats" id="ticket-stats"></dl>
+              <p class="phaseModal__sectionLabel">Token spend</p>
+              <div id="ticket-tokens"></div>
+              <a class="phaseModal__gh" id="ticket-gh" target="_blank" rel="noopener">Open on GitHub ↗</a>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <script type="module" src="./js/proto-board.js"></script>
 </body>
 </html>
