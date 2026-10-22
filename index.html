@@ -37,6 +37,21 @@
         </div>
         <span class="board__hudSeq board__hudTokens" id="token-totals" title="Token spend across all cards · read = prompt + cache, write = completion">TOKENS —</span>
         <span class="board__hudSeq" id="tick-status">…</span>
+        <button class="board__bnBtn" id="bottleneck-btn" type="button" aria-haspopup="dialog" title="Bottlenecks — stuck items, failing checks, delivered today">
+          <span class="board__bnLabel">BOTTLENECKS</span>
+          <span class="board__bnStat is-stuck" title="stuck &gt; 45m no movement">
+            <svg class="iconIco" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.8L14.2 13H1.8z"/><path d="M8 6.8v2.7M8 11.4v.1"/></g></svg>
+            <b id="bn-stuck">–</b>
+          </span>
+          <span class="board__bnStat is-err" title="failing checks">
+            <svg class="iconIco" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.5"/><path d="M6.2 6.2l3.6 3.6M9.8 6.2l-3.6 3.6"/></g></svg>
+            <b id="bn-err">–</b>
+          </span>
+          <span class="board__bnStat is-ok" title="delivered today (UTC)">
+            <svg class="iconIco" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.5"/><path d="M5.4 8.2l1.8 1.8 3.4-3.7"/></g></svg>
+            <b id="bn-done">–</b>
+          </span>
+        </button>
       </span>
     </header>
     <div class="board__ledger" id="factory-ledger" role="status">LEDGER …</div>
@@ -116,7 +131,34 @@
             </aside>
           </div>
         </div>
+      <div id="bottleneck-view" hidden>
+        <button class="phaseModal__back" type="button" id="bn-back">
+          <svg class="iconIco" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3.5L3.5 8 8 12.5M3.5 8H13"/></g></svg>
+          <span>Back to board</span>
+        </button>
+        <p class="phaseModal__eyebrow" id="bn-eyebrow"></p>
+        <h2 class="phaseModal__title">Bottlenecks</h2>
+        <div class="bnGrid">
+          <section class="bnSec">
+            <p class="phaseModal__sectionLabel">Stuck · no movement &gt; 45m</p>
+            <div id="bn-stuck-list"></div>
+          </section>
+          <section class="bnSec">
+            <p class="phaseModal__sectionLabel">Failing checks</p>
+            <div id="bn-err-list"></div>
+          </section>
+          <section class="bnSec">
+            <p class="phaseModal__sectionLabel">Delivered today · UTC</p>
+            <div id="bn-done-list"></div>
+          </section>
+          <section class="bnSec">
+            <p class="phaseModal__sectionLabel">Avg time per item · by phase</p>
+            <div id="bn-flow"></div>
+          </section>
+        </div>
       </div>
+      </div>
+
     </div>
   </section>
   <script type="module" src="./js/proto-board.js"></script>
